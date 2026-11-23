@@ -1,0 +1,94 @@
+name: Deployment pipeline
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - name: Install backend dependencies
+        run: npm install
+      - name: Lint backend
+        run: npm run lint
+      - name: Install frontend dependencies
+        run: cd frontend && npm install
+      - name: Lint frontend
+        run: cd frontend && npm run lint
+
+  build_and_test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - name: Install backend dependencies
+        run: npm install
+      - name: Build frontend UI
+        run: npm run build:ui
+      - name: Run backend checks
+        run: npm test
+
+  deploy:
+    needs: [lint, build_and_test]
+    if: ${{ github.event_name == 'push' && !contains(toJson(github.event.commits), '#skip') && !contains(github.event.head_commit.message, '#skip') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger deployment
+        run: curl ${{ secrets.RENDER_DEPLOY_HOOK }}
+
+  tag_release:
+    needs: [deploy]
+    if: ${{ github.event_name == 'push' && !contains(toJson(github.event.commits), '#skip') && !contains(github.event.head_commit.message, '#skip') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: '0'
+      - name: Bump version and push tag
+        uses: anothrNick/github-tag-action@4ed44965e0db8dab2b466a16da04aec3cc312fd8
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEFAULT_BUMP: patch
+
+  notify_success:
+    needs: [deploy]
+    if: ${{ github.event_name == 'push' && !contains(toJson(github.event.commits), '#skip') && !contains(github.event.head_commit.message, '#skip') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify Discord on deployment success
+        uses: sarisia/actions-status-discord@v1
+        with:
+          webhook: ${{ secrets.DISCORD_WEBHOOK }}
+          status: Success
+          title: 'Phonebook Deployed!'
+          description: 'Successfully linted, built, deployed, and tagged commit `${{ github.sha }}`.'
+          color: 0x00ff00
+
+  notify_failure:
+    needs: [lint, build_and_test, deploy]
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify Discord on failure
+        uses: sarisia/actions-status-discord@v1
+        with:
+          webhook: ${{ secrets.DISCORD_WEBHOOK }}
+          status: Failure
+          title: 'Phonebook Build Failed!'
+          description: |
+            Commit `${{ github.sha }}` by **${{ github.actor }}** failed the pipeline.
+            Message: ${{ github.event.head_commit.message }}
+          color: 0xff0000
